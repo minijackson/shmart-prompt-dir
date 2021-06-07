@@ -1,0 +1,153 @@
+#!/usr/bin/env zsh
+
+# Shamelessly inspired from:
+# https://github.com/romkatv/powerlevel10k
+
+emulate -L zsh
+
+local cwd=${(%):-%~}
+
+local truncation_length
+zstyle -s ":shmart-prompt-dir" truncation-length truncation_length || truncation_length=30
+
+local min_length
+zstyle -s ":shmart-prompt-dir" minimum-length min_length || min_length=1
+
+local extra_whitespace
+if zstyle -T ":shmart-prompt-dir" extra-whitespace; then
+	extra_whitespace=" "
+else
+	extra_whitespace=""
+fi
+
+local separator_style
+zstyle -s ":shmart-prompt-dir:separator" style separator_style || separator_style="%F{8}"
+
+local shortened_style
+zstyle -s ":shmart-prompt-dir:shortened" style shortened_style || shortened_style="%B%F{8}"
+
+local kept_style
+zstyle -s ":shmart-prompt-dir:kept" style kept_style || kept_style="%B%F{default}"
+
+local failed_style
+zstyle -s ":shmart-prompt-dir:failed" style failed_style || failed_style="$kept_style"
+
+local nix_enabled
+if zstyle -T ":shmart-prompt-dir:important:nix" enable; then
+	nix_enabled=yes
+else
+	nix_enabled=no
+fi
+
+local nix_style
+zstyle -s ":shmart-prompt-dir:important:git" style nix_style || nix_style="%B%F{12}"
+
+local nix_hash_len
+zstyle -s ":shmart-prompt-dir:important:nix" hash-length nix_hash_len || nix_hash_len=4
+
+local git_enabled
+if zstyle -T ":shmart-prompt-dir:important:git" enable; then
+	git_enabled=yes
+else
+	git_enabled=no
+fi
+
+local git_style
+zstyle -s ":shmart-prompt-dir:important:git" style git_style || git_style="%B%F{12}"
+
+local -a parts=()
+
+# TODO: check that dynamically named directories work
+if [[ $cwd == '~['* ]]; then
+	for func in zsh_directory_name $zsh_directory_name_functions; do
+		local reply=()
+		if (( $+functions[$func] )) && $func d $cwd && [[ $cwd == '~['$reply[1]']'* ]]; then
+			parts+='~['$reply[1]']'
+			break
+		fi
+	done
+	if (( $#parts )); then
+		parts+=(${(s:/:)${cwd#$parts[1]}})
+	else
+		parts=("${(s:/:)cwd}")
+	fi
+else
+	local -a parts=("${(s:/:)cwd}")
+fi
+
+# Without prompt expansion, to calculate length
+local -a new_parts_bare=()
+# With prompt expansion
+local -a new_parts=()
+
+local -a rest=("${parts[@]}")
+
+local truncating=1
+
+for i in {1..$((${#parts[@]}))}; do
+	local -a current_parts_bare=("${new_parts_bare[@]}" "${rest[@]}")
+	local current_prompt_bare="${(j:/:)current_parts_bare[@]}"
+
+	if (( i == ${#parts[@]} || ${#current_prompt_bare} <= truncation_length )); then
+		truncating=0
+	fi
+
+	local part="${parts[$i]}"
+
+	# Normal when splitting paths like /aa/bbb
+	if [[ "$part" == "" ]]; then
+		new_parts_bare+="$part"
+		new_parts+="${part}"
+		rest=("${parts[@]:$i}")
+		continue
+	fi
+
+	if [[ "$part" == "~"* ]]; then
+		new_parts_bare+="$part"
+		new_parts+="${kept_style}${part}%f%b"
+		rest=("${parts[@]:$i}")
+		continue
+	fi
+
+	local subpath="${(j:/:)parts[@]:0:$i - 1}"
+	local expanded_subpath=${~${subpath}}
+
+	# Nix support
+	if [[ "$nix_enabled" == "yes" && "$expanded_subpath" == "/nix/store" && "$part" -regex-match "([[:alnum:]]+?)-(.+)" ]]; then
+		new_parts_bare+="${match[1][1,4]}..-${match[2]}"
+		new_parts+="${shortened_style}${match[1][1,$nix_hash_len]}..-${nix_style}${match[2]}%b%f"
+		rest=("${parts[@]:$i}")
+		continue
+	fi
+
+	# Git support
+	if [[ "$git_enabled" && -e "$expanded_subpath/$part/.git" ]]; then
+		# Keep length
+		new_parts_bare+="$part"
+		new_parts+="${git_style}${part}%b%f"
+		rest=("${parts[@]:$i}")
+		continue
+	fi
+
+	# Find the shortest unique prefix
+	local found=0
+	for ((j = min_length; truncating && j < ${#part}; ++j)); do
+		local glob="${expanded_subpath}/${part:0:$j}*"
+		local -a glob_matches=(${~glob})
+		if (( ${#glob_matches} <= 1 )); then
+			new_parts_bare+="${part:0:$j}"
+			new_parts+="${shortened_style}${part:0:$j}%f%b"
+			found=1
+			break;
+		fi
+	done
+
+	if [[ "$found" == 0 ]]; then
+		new_parts_bare+="${part}"
+		new_parts+="${failed_style}${part}%f%b"
+	fi
+
+	rest=("${parts[@]:$i}")
+done
+
+reply="%b${(ej:${separator_style}/%b%f:)new_parts[@]}${extra_whitespace}"
