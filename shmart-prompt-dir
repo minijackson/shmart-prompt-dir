@@ -5,6 +5,8 @@
 
 emulate -L zsh
 
+zmodload zsh/regex
+
 local cwd=${(%):-%~}
 
 local truncation_length
